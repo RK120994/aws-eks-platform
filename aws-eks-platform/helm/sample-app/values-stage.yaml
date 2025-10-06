@@ -1,0 +1,250 @@
+# Staging Environment Values for sample-app Helm chart
+
+# Environment-specific configuration
+environment: stage
+
+# Image configuration for staging
+image:
+  repository: your-account.dkr.ecr.us-west-2.amazonaws.com/demo-app
+  tag: "stage-latest"
+  pullPolicy: Always
+
+# Resource limits for staging (production-like resources)
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Autoscaling for staging
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Replica count when autoscaling is disabled
+replicaCount: 2
+
+# Environment variables for staging
+env:
+  ENVIRONMENT: "staging"
+  LOG_LEVEL: "info"
+  PORT: "8000"
+  HOST: "0.0.0.0"
+
+# Secrets for staging (use proper secrets management in real env)
+secrets:
+  DATABASE_URL: "postgresql://stage-user:stage-secure-password@stage-db:5432/stagedb"
+  API_KEY: "stage-api-key-secure"
+
+# ConfigMap for staging
+configMap:
+  app.properties: |
+    # Staging Application properties
+    app.name=sample-app
+    app.debug=false
+    app.environment=staging
+    app.cache.enabled=true
+    app.cache.ttl=300
+    
+  logging.conf: |
+    # Staging Logging configuration
+    version: 1
+    disable_existing_loggers: false
+    formatters:
+      default:
+        format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+      json:
+        format: '{"timestamp":"%(asctime)s","name":"%(name)s","level":"%(levelname)s","message":"%(message)s"}'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        level: INFO
+        formatter: json
+      file:
+        class: logging.FileHandler
+        filename: /app/logs/app.log
+        level: INFO
+        formatter: json
+    root:
+      level: INFO
+      handlers: [console, file]
+
+# Ingress configuration for staging
+ingress:
+  enabled: true
+  className: "aws-load-balancer-controller"
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: ""  # Add your SSL certificate ARN
+    alb.ingress.kubernetes.io/tags: Environment=stage,Project=demo
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+  hosts:
+    - host: sample-app-stage.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: sample-app-stage-tls
+      hosts:
+        - sample-app-stage.example.com
+
+# Health check configuration (production-like)
+healthCheck:
+  enabled: true
+  livenessProbe:
+    httpGet:
+      path: /health/live
+      port: 8000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health/ready
+      port: 8000
+    initialDelaySeconds: 20
+    periodSeconds: 5
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+
+# Monitoring configuration
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+    port: 8000
+    path: /metrics
+    scrapeInterval: 30s
+
+# Pod annotations for staging
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"
+  environment: "stage"
+
+# Network policies (enabled for better security)
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 53  # DNS
+        - protocol: UDP
+          port: 53  # DNS
+        - protocol: TCP
+          port: 443  # HTTPS
+        - protocol: TCP
+          port: 5432  # PostgreSQL
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Staging-specific labels
+commonLabels:
+  environment: stage
+  tier: staging
+
+# Staging-specific annotations
+commonAnnotations:
+  deployed-by: "helm"
+  environment: "staging"
+  backup: "daily"
+
+# Service account with IAM role
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: ""  # Add your IAM role ARN for stage
+
+# Security context (more restrictive)
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+# Additional volumes for logs
+volumes:
+  - name: logs-volume
+    emptyDir: {}
+  - name: tmp-volume
+    emptyDir: {}
+
+# Volume mounts
+volumeMounts:
+  - name: logs-volume
+    mountPath: /app/logs
+  - name: tmp-volume
+    mountPath: /tmp
+
+# Affinity rules for better distribution
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - sample-app
+        topologyKey: kubernetes.io/hostname
+
+# Node selector for staging nodes (if you have dedicated node pools)
+nodeSelector:
+  environment: stage
+
+# Tolerations for staging workloads
+tolerations:
+  - key: "staging-workload"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule"

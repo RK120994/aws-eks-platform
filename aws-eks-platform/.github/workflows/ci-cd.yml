@@ -1,0 +1,381 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, stage ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPOSITORY: demo-app
+  EKS_CLUSTER_NAME: demo-eks
+
+jobs:
+  # Code quality and security checks
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r app/requirements.txt
+
+    - name: Lint with flake8
+      run: |
+        pip install flake8
+        flake8 app/src --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 app/src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Test with pytest
+      run: |
+        pip install pytest pytest-asyncio
+        # Add tests when available
+        # pytest app/tests/
+
+    - name: Security scan with bandit
+      run: |
+        pip install bandit
+        bandit -r app/src/ -f json -o bandit-report.json || true
+
+    - name: Upload security scan results
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-scan-results
+        path: bandit-report.json
+
+  # Build and push Docker image
+  build-and-push:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    outputs:
+      image-tag: ${{ steps.image-tag.outputs.tag }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions-${{ github.run_id }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Generate image tag
+      id: image-tag
+      run: |
+        BRANCH_NAME=${GITHUB_REF_NAME}
+        SHORT_SHA=${GITHUB_SHA:0:7}
+        TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+        
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          TAG=${GITHUB_REF_NAME}
+        elif [[ $BRANCH_NAME == "main" ]]; then
+          TAG="latest-${SHORT_SHA}-${TIMESTAMP}"
+        else
+          TAG="${BRANCH_NAME}-${SHORT_SHA}-${TIMESTAMP}"
+        fi
+        
+        echo "tag=$TAG" >> $GITHUB_OUTPUT
+        echo "Generated image tag: $TAG"
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+      run: |
+        # Build image with build args
+        docker build \
+          --build-arg APP_VERSION=${{ steps.image-tag.outputs.tag }} \
+          --build-arg BUILD_ID=${{ github.run_id }} \
+          -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+          app/
+        
+        # Push image to ECR
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        
+        # Get image digest
+        DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG | cut -d@ -f2)
+        echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+
+    - name: Scan image for vulnerabilities
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+      run: |
+        # Trigger ECR image scan
+        aws ecr start-image-scan --repository-name $ECR_REPOSITORY --image-id imageTag=$IMAGE_TAG --region $AWS_REGION || true
+        
+        # Wait for scan to complete and get results
+        sleep 30
+        aws ecr describe-image-scan-findings --repository-name $ECR_REPOSITORY --image-id imageTag=$IMAGE_TAG --region $AWS_REGION || true
+
+  # Deploy to development environment
+  deploy-dev:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
+    environment:
+      name: dev
+      url: https://sample-app-dev.example.com
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions-Deploy-Dev-${{ github.run_id }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $AWS_REGION --name ${{ env.EKS_CLUSTER_NAME }}-dev
+
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace dev --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy with Helm
+      env:
+        IMAGE_TAG: ${{ needs.build-and-push.outputs.image-tag }}
+        ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+      run: |
+        helm upgrade --install sample-app helm/sample-app \
+          --namespace dev \
+          --values helm/sample-app/values-dev.yaml \
+          --set image.repository=$ECR_REGISTRY/$ECR_REPOSITORY \
+          --set image.tag=$IMAGE_TAG \
+          --set-string podAnnotations.deployedAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --set-string podAnnotations.gitCommit="${{ github.sha }}" \
+          --wait --timeout=300s
+
+    - name: Verify deployment
+      run: |
+        kubectl rollout status deployment/sample-app -n dev --timeout=300s
+        kubectl get pods -n dev -l app.kubernetes.io/name=sample-app
+
+  # Deploy to staging environment
+  deploy-stage:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/stage' || startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: stage
+      url: https://sample-app-stage.example.com
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions-Deploy-Stage-${{ github.run_id }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup kubectl and Helm
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $AWS_REGION --name ${{ env.EKS_CLUSTER_NAME }}-stage
+
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace stage --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Deploy with Helm
+      env:
+        IMAGE_TAG: ${{ needs.build-and-push.outputs.image-tag }}
+        ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+      run: |
+        helm upgrade --install sample-app helm/sample-app \
+          --namespace stage \
+          --values helm/sample-app/values-stage.yaml \
+          --set image.repository=$ECR_REGISTRY/$ECR_REPOSITORY \
+          --set image.tag=$IMAGE_TAG \
+          --set-string podAnnotations.deployedAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --set-string podAnnotations.gitCommit="${{ github.sha }}" \
+          --wait --timeout=600s
+
+    - name: Verify deployment
+      run: |
+        kubectl rollout status deployment/sample-app -n stage --timeout=600s
+        kubectl get pods -n stage -l app.kubernetes.io/name=sample-app
+
+  # Deploy to production environment (requires manual approval)
+  deploy-prod:
+    needs: [build-and-push, deploy-stage]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: production
+      url: https://sample-app.example.com
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions-Deploy-Prod-${{ github.run_id }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup kubectl and Helm
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $AWS_REGION --name ${{ env.EKS_CLUSTER_NAME }}-prod
+
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace prod --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Backup current deployment
+      run: |
+        # Save current release for potential rollback
+        helm get values sample-app -n prod > /tmp/previous-values.yaml || echo "No previous deployment"
+        echo "PREVIOUS_REVISION=$(helm list -n prod -o json | jq -r '.[] | select(.name=="sample-app") | .revision')" >> $GITHUB_ENV
+
+    - name: Deploy with Helm
+      env:
+        IMAGE_TAG: ${{ needs.build-and-push.outputs.image-tag }}
+        ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+      run: |
+        helm upgrade --install sample-app helm/sample-app \
+          --namespace prod \
+          --values helm/sample-app/values-prod.yaml \
+          --set image.repository=$ECR_REGISTRY/$ECR_REPOSITORY \
+          --set image.tag=$IMAGE_TAG \
+          --set-string podAnnotations.deployedAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --set-string podAnnotations.gitCommit="${{ github.sha }}" \
+          --wait --timeout=900s
+
+    - name: Verify deployment
+      run: |
+        kubectl rollout status deployment/sample-app -n prod --timeout=900s
+        kubectl get pods -n prod -l app.kubernetes.io/name=sample-app
+
+    - name: Run smoke tests
+      run: |
+        # Get the service endpoint
+        ENDPOINT=$(kubectl get ingress sample-app -n prod -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        
+        # Wait for endpoint to be ready
+        sleep 60
+        
+        # Run basic health checks
+        curl -f "https://$ENDPOINT/health" || exit 1
+        curl -f "https://$ENDPOINT/health/ready" || exit 1
+        curl -f "https://$ENDPOINT/" || exit 1
+
+  # Rollback job (can be triggered manually)
+  rollback:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions-Rollback-${{ github.run_id }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup kubectl and Helm
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+    
+    - name: Setup Helm
+      uses: azure/setup-helm@v3
+      with:
+        version: '3.12.0'
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region $AWS_REGION --name ${{ env.EKS_CLUSTER_NAME }}-${{ github.event.inputs.environment }}
+
+    - name: Rollback Helm release
+      run: |
+        NAMESPACE=${{ github.event.inputs.environment }}
+        REVISION=${{ github.event.inputs.revision || '0' }}
+        
+        if [ "$REVISION" = "0" ]; then
+          # Rollback to previous revision
+          helm rollback sample-app -n $NAMESPACE
+        else
+          # Rollback to specific revision
+          helm rollback sample-app $REVISION -n $NAMESPACE
+        fi
+        
+        kubectl rollout status deployment/sample-app -n $NAMESPACE --timeout=600s
+
+  # Cleanup old images (runs weekly)
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 2 * * 0'  # Weekly on Sunday at 2 AM
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        role-session-name: GitHubActions-Cleanup-${{ github.run_id }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Cleanup old ECR images
+      run: |
+        # Keep only last 20 images
+        aws ecr list-images --repository-name $ECR_REPOSITORY --filter tagStatus=TAGGED --query 'imageIds[20:]' --output json | \
+        jq '.[] | select(.imageTag != "latest")' | \
+        aws ecr batch-delete-image --repository-name $ECR_REPOSITORY --image-ids file:///dev/stdin || true
