@@ -1,0 +1,228 @@
++-# Default values for sample-app Helm chart
+# This is a YAML-formatted file.
+
+# Application configuration
+app:
+  name: sample-app
+  version: "1.0.0"
+  port: 8000
+
+# Image configuration
+image:
+  repository: your-account.dkr.ecr.us-west-2.amazonaws.com/demo-app
+  tag: ""  # Will be overridden by CI/CD pipeline
+  pullPolicy: Always
+
+# Image pull secrets (for private registries)
+imagePullSecrets: []
+
+# Service account configuration
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1000
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "aws-load-balancer-controller"
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: ""  # Will be set per environment
+    alb.ingress.kubernetes.io/tags: Environment={{ .Values.environment }}
+  hosts:
+    - host: sample-app.example.com  # Will be overridden per environment
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Replica count (when autoscaling is disabled)
+replicaCount: 1
+
+# Environment variables
+env:
+  ENVIRONMENT: "development"
+  LOG_LEVEL: "info"
+  PORT: "8000"
+  HOST: "0.0.0.0"
+
+# Environment variables from ConfigMap
+envFromConfigMap: {}
+
+# Environment variables from Secret
+envFromSecret: {}
+
+# Secrets (will be created as Kubernetes Secret)
+secrets:
+  # Example: API_KEY: "your-secret-api-key"
+  DATABASE_URL: "postgresql://user:password@localhost:5432/mydb"
+  API_KEY: "supersecret-api-key"
+
+# ConfigMap data
+configMap:
+  # Example configuration
+  app.properties: |
+    # Application properties
+    app.name=sample-app
+    app.debug=false
+    
+  logging.conf: |
+    # Logging configuration
+    version: 1
+    disable_existing_loggers: false
+
+# Health check configuration
+healthCheck:
+  enabled: true
+  livenessProbe:
+    httpGet:
+      path: /health/live
+      port: 8000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health/ready
+      port: 8000
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+
+# Monitoring configuration
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+    port: 8000
+    path: /metrics
+    scrapeInterval: 30s
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"
+
+# Pod labels
+podLabels: {}
+
+# Deployment strategy
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+# Environment-specific configuration (will be overridden by values-{env}.yaml)
+environment: development
+
+# Network policies
+networkPolicy:
+  enabled: false
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from: []
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 53  # DNS
+        - protocol: UDP
+          port: 53  # DNS
+        - protocol: TCP
+          port: 443  # HTTPS
+
+# Additional volumes
+volumes: []
+  # - name: cache-volume
+  #   emptyDir: {}
+
+# Additional volume mounts
+volumeMounts: []
+  # - name: cache-volume
+  #   mountPath: /app/cache
+
+# Init containers
+initContainers: []
+  # - name: init-db
+  #   image: busybox:1.35
+  #   command: ['sh', '-c', 'echo "Initializing database..." && sleep 10']
+
+# Sidecar containers
+sidecars: []
+  # - name: log-shipper
+  #   image: fluent/fluent-bit:1.9
+  #   resources:
+  #     requests:
+  #       cpu: 10m
+  #       memory: 32Mi
+
+# Additional labels for all resources
+commonLabels: {}
+
+# Additional annotations for all resources
+commonAnnotations: {}
