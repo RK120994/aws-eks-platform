@@ -2,7 +2,7 @@
 
 This repository contains a complete end-to-end DevOps solution for deploying a FastAPI application to Amazon EKS using Terraform, Helm, and GitHub Actions.
 
-## 🏗️ Architecture Overview
+##  Architecture Overview
 
 - **Infrastructure**: Amazon EKS cluster with VPC, IAM roles, and managed node groups provisioned via Terraform
 - **Application**: Simple FastAPI service with health checks and Prometheus metrics
@@ -11,7 +11,7 @@ This repository contains a complete end-to-end DevOps solution for deploying a F
 - **Security**: HTTPS ingress, least-privilege IAM policies, Kubernetes secrets
 - **Observability**: Prometheus metrics, CloudWatch integration, alerting rules
 
-## 📁 Project Structure
+##  Project Structure
 
 ```
 ├── terraform/              # Infrastructure as Code
@@ -34,7 +34,7 @@ This repository contains a complete end-to-end DevOps solution for deploying a F
 └── docs/                # Additional documentation
 ```
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Prerequisites
 
@@ -106,7 +106,7 @@ kubectl get ingress -n dev
 curl https://your-app-url/health
 ```
 
-## 🔄 CI/CD Workflow
+##  CI/CD Workflow
 
 ### GitHub Actions Setup
 
@@ -132,7 +132,7 @@ curl https://your-app-url/health
 python scripts/dev-cli.py rollback --environment dev --revision 1
 ```
 
-## 🛠️ Development Tooling
+##  Development Tooling
 
 ### Python CLI Script
 
@@ -152,7 +152,7 @@ python scripts/dev-cli.py logs --environment dev --follow
 python scripts/dev-cli.py rollback --environment prod --confirm
 ```
 
-## 🔒 Security Features
+##  Security Features
 
 - **Network Security**: Private subnets for worker nodes, security groups with minimal access
 - **IAM**: Least-privilege policies for all roles (EKS service role, node group role, CI/CD role)
@@ -161,7 +161,7 @@ python scripts/dev-cli.py rollback --environment prod --confirm
 - **Image Security**: Container image scanning in CI/CD pipeline
 - **HTTPS Only**: ALB ingress controller with SSL/TLS termination
 
-## 📊 Monitoring & Observability
+##  Monitoring & Observability
 
 ### Metrics Collection
 - **Application Metrics**: Prometheus endpoint at `/metrics`
@@ -177,14 +177,8 @@ python scripts/dev-cli.py rollback --environment prod --confirm
 - Grafana dashboards for application and infrastructure metrics
 - CloudWatch dashboards for AWS service metrics
 
-## 🚨 Troubleshooting
 
-See detailed runbooks in `monitoring/runbooks/`:
-- [High Error Rate Investigation](monitoring/runbooks/high-error-rate.md)
-- [Pod Crash Loop Debugging](monitoring/runbooks/pod-crashloop.md)
-- [Network Connectivity Issues](monitoring/runbooks/network-issues.md)
-
-## 🏷️ Environment Management
+ Environment Management
 
 ### Environments
 
@@ -199,25 +193,8 @@ Environment-specific configurations are managed via:
 - Helm values files (`helm/sample-app/values-*.yaml`)
 - Kubernetes namespaces for workload isolation
 
-## 📝 Additional Resources
 
-- [Solution Architecture](SOLUTION.md)
-- [Security Best Practices](docs/security.md)
-- [Deployment Strategies](docs/deployment.md)
-- [Monitoring Setup](docs/monitoring.md)
 
-## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
 
-## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
----
-
-**Note**: This is a demonstration project designed for learning and evaluation purposes. For production use, additional security hardening, monitoring, and operational procedures should be implemented.
